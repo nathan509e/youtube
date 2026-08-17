@@ -1,5 +1,8 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import ytdl from '@distube/ytdl-core';
-import ytDlp, { exec as ytDlpExec } from 'yt-dlp-exec';
+import ytDlp from 'yt-dlp-exec';
 import { ENV } from '../config/env.js';
 
 export interface VideoFormatOption {
@@ -10,6 +13,10 @@ export interface VideoFormatOption {
   hasAudio: boolean;
   filesize?: string;
   url?: string;
+  height?: number;
+  codec?: string;
+  fps?: number;
+  ext?: string;
 }
 
 export interface VideoMetadata {
@@ -24,15 +31,55 @@ export interface VideoMetadata {
   audioAvailable: boolean;
 }
 
+// Try yt-dlp with multiple auth strategies: browser cookies first, then bare
+async function tryYtDlpMeta(url: string, extraOptions: Record<string, any> = {}): Promise<any> {
+  const base = {
+    dumpSingleJson: true,
+    noWarnings: true,
+    noCheckCertificate: true,
+    preferFreeFormats: true,
+    ...extraOptions,
+  };
+
+  // 0. Try explicit cookies file if configured and present (best for 4K + bot-check)
+  const cookiesPath = ENV.YT_COOKIES_PATH && fs.existsSync(ENV.YT_COOKIES_PATH)
+    ? ENV.YT_COOKIES_PATH
+    : undefined;
+
+  if (cookiesPath) {
+    try {
+      const data = await ytDlp(url, { ...base, cookies: cookiesPath });
+      if (data && (data as any).title) return data;
+    } catch {
+      // try next
+    }
+  }
+
+  // 1. Try each browser's cookie store
+  for (const browser of ['chrome', 'edge', 'firefox']) {
+    try {
+      const data = await ytDlp(url, { ...base, cookiesFromBrowser: browser } as any);
+      if (data && (data as any).title) return data;
+    } catch {
+      // try next
+    }
+  }
+
+  // 2. Try without browser cookies (last resort before ytdl-core)
+  try {
+    const data = await ytDlp(url, base);
+    if (data && (data as any).title) return data;
+  } catch {
+    // fall through to ytdl-core
+  }
+
+  return null;
+}
+
 export async function getYoutubeMetadata(url: string): Promise<VideoMetadata> {
   // Try yt-dlp first
   try {
-    const data: any = await ytDlp(url, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noCheckCertificate: true,
-      preferFreeFormats: true,
-    });
+    const data: any = await tryYtDlpMeta(url);
 
     if (data && data.title) {
       const duration = Math.floor(data.duration || 0);
@@ -48,20 +95,17 @@ export async function getYoutubeMetadata(url: string): Promise<VideoMetadata> {
       const author = data.uploader || data.channel || 'Autor desconhecido';
       const thumbnail = data.thumbnail || (data.thumbnails && data.thumbnails[data.thumbnails.length - 1]?.url) || '';
 
-      // Standard qualities to display up to 1080p
-      const qualitiesOrder = ['1080p', '720p', '480p', '360p', '240p', '144p'];
+      // Qualities to display: "Melhor qualidade" (highest available) first, then real resolutions up to 4K
+      const qualitiesOrder = ['2160p', '1440p', '1080p', '720p', '480p', '360p', '240p', '144p'];
       const rawFormats = data.formats || [];
       const availableMap = new Map<string, VideoFormatOption>();
 
       for (const fmt of rawFormats) {
         let heightLabel = fmt.height ? `${fmt.height}p` : undefined;
         if (!heightLabel && fmt.format_note) {
-          if (fmt.format_note.includes('1080')) heightLabel = '1080p';
-          else if (fmt.format_note.includes('720')) heightLabel = '720p';
-          else if (fmt.format_note.includes('480')) heightLabel = '480p';
-          else if (fmt.format_note.includes('360')) heightLabel = '360p';
-          else if (fmt.format_note.includes('240')) heightLabel = '240p';
-          else if (fmt.format_note.includes('144')) heightLabel = '144p';
+          // Extract resolution like "2160p", "1440p", "1080p" from format_note
+          const resolution = fmt.format_note.match(/(\d{3,4})p/);
+          if (resolution) heightLabel = `${resolution[1]}p`;
         }
 
         if (heightLabel && qualitiesOrder.includes(heightLabel)) {
@@ -76,12 +120,26 @@ export async function getYoutubeMetadata(url: string): Promise<VideoMetadata> {
               filesize: sizeInBytes
                 ? `${(sizeInBytes / (1024 * 1024)).toFixed(1)} MB`
                 : undefined,
+              height: fmt.height,
+              codec: fmt.vcodec && fmt.vcodec !== 'none' ? fmt.vcodec : undefined,
+              fps: fmt.fps,
+              ext: fmt.ext,
             });
           }
         }
       }
 
       const sortedFormats: VideoFormatOption[] = [];
+      // "Melhor qualidade" always first (downloads the highest available stream)
+      if (availableMap.size > 0) {
+        sortedFormats.push({
+          id: 'best',
+          quality: 'best',
+          container: 'mp4',
+          hasVideo: true,
+          hasAudio: true,
+        });
+      }
       for (const q of qualitiesOrder) {
         if (availableMap.has(q)) {
           sortedFormats.push(availableMap.get(q)!);
@@ -145,10 +203,11 @@ export async function getYoutubeMetadata(url: string): Promise<VideoMetadata> {
 
     const rawFormats = info.formats || [];
     const availableQualities = new Map<string, VideoFormatOption>();
-    const qualitiesOrder = ['1080p', '720p', '480p', '360p', '240p', '144p'];
+    const qualitiesOrder = ['2160p', '1440p', '1080p', '720p', '480p', '360p', '240p', '144p'];
 
     for (const fmt of rawFormats) {
-      const qualityLabel = fmt.qualityLabel || (fmt.height ? `${fmt.height}p` : undefined);
+      // Use height directly to avoid mismatches like "1080p60" vs "1080p"
+      const qualityLabel = fmt.height ? `${fmt.height}p` : undefined;
       if (qualityLabel && qualitiesOrder.includes(qualityLabel)) {
         if (!availableQualities.has(qualityLabel)) {
           availableQualities.set(qualityLabel, {
@@ -160,12 +219,25 @@ export async function getYoutubeMetadata(url: string): Promise<VideoMetadata> {
             filesize: fmt.contentLength
               ? `${(parseInt(fmt.contentLength, 10) / (1024 * 1024)).toFixed(1)} MB`
               : undefined,
+            height: fmt.height,
+            codec: fmt.codecs ? fmt.codecs.split(',')[0].trim() : undefined,
+            fps: fmt.fps,
+            ext: fmt.container,
           });
         }
       }
     }
 
     const sortedFormats: VideoFormatOption[] = [];
+    if (availableQualities.size > 0) {
+      sortedFormats.push({
+        id: 'best',
+        quality: 'best',
+        container: 'mp4',
+        hasVideo: true,
+        hasAudio: true,
+      });
+    }
     for (const q of qualitiesOrder) {
       if (availableQualities.has(q)) {
         sortedFormats.push(availableQualities.get(q)!);
@@ -201,30 +273,83 @@ export async function getYoutubeMetadata(url: string): Promise<VideoMetadata> {
 }
 
 export async function streamYoutubeDownload(url: string, formatId: string, audioOnly: boolean = false) {
-  // Try yt-dlp streaming first
-  try {
-    let formatFilter = 'best[height<=1080][ext=mp4]/best[height<=1080]/bestvideo[height<=1080]+bestaudio/best';
-    if (audioOnly) {
-      formatFilter = 'bestaudio/best';
-    } else if (formatId) {
+  let formatFilter = 'bestvideo+bestaudio/best';
+  if (audioOnly) {
+    formatFilter = 'bestaudio/best';
+  } else if (formatId) {
+    if (formatId === 'best') {
+      // "Melhor qualidade": highest available video + audio, merged to mp4
+      formatFilter = 'bestvideo+bestaudio/best';
+    } else {
       const height = formatId.replace(/[^0-9]/g, '');
       if (height && !isNaN(parseInt(height, 10))) {
-        formatFilter = `best[height<=${height}][ext=mp4]/best[height<=${height}]/bestvideo[height<=${height}]+bestaudio/best`;
+        // Prefer merging the separate DASH video+audio streams first — YouTube only
+        // exposes pre-combined ("progressive") formats up to ~720p, so trying those
+        // first silently capped every download (even 4K/2K requests) at low res.
+        formatFilter = `bestvideo[height<=${height}]+bestaudio/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
       }
     }
-
-    const process = ytDlpExec(url, {
-      output: '-',
-      format: formatFilter,
-      noWarnings: true,
-    });
-
-    if (process && process.stdout) {
-      return { stream: process.stdout };
-    }
-  } catch (err: any) {
-    console.warn('yt-dlp stream fallback to ytdl-core:', err?.message || err);
   }
+
+  const cookiesPath = ENV.YT_COOKIES_PATH && fs.existsSync(ENV.YT_COOKIES_PATH)
+    ? ENV.YT_COOKIES_PATH
+    : undefined;
+
+  // Primary path: download to a temp file so ffmpeg can merge DASH streams (4K etc.),
+  // then stream the finished file back. No Content-Length until the file is ready.
+  const tmpDir = os.tmpdir();
+  const tmpFile = path.join(
+    tmpDir,
+    `videodrop-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${audioOnly ? 'm4a' : 'mp4'}`
+  );
+
+  const ytDlpOptions: Record<string, any> = {
+    output: tmpFile,
+    format: formatFilter,
+    noWarnings: true,
+    // Force the android_vr player client + Node.js JS runtime so media downloads
+    // work without cookies (the default `web` client gets a 403 bot-check).
+    extractorArgs: 'youtube:player_client=android_vr',
+    jsRuntimes: 'node',
+  };
+
+  if (!audioOnly) {
+    ytDlpOptions.mergeOutputFormat = 'mp4';
+  }
+
+  if (cookiesPath) {
+    ytDlpOptions.cookies = cookiesPath;
+  }
+
+  const attempters: Array<() => Promise<any>> = [];
+  if (cookiesPath) {
+    attempters.push(() => ytDlp(url, ytDlpOptions));
+  }
+  for (const browser of ['chrome', 'edge', 'firefox']) {
+    attempters.push(() => ytDlp(url, { ...ytDlpOptions, cookies: undefined, cookiesFromBrowser: browser } as any));
+  }
+  attempters.push(() => ytDlp(url, { ...ytDlpOptions, cookies: undefined, cookiesFromBrowser: undefined } as any));
+
+  for (const attempt of attempters) {
+    try {
+      await attempt();
+      const contentLength = fs.statSync(tmpFile).size;
+      const stream = fs.createReadStream(tmpFile);
+      // Clean up the temp file once the stream is done or errors out
+      const cleanup = () => {
+        fs.unlink(tmpFile, () => {});
+      };
+      stream.on('end', cleanup);
+      stream.on('close', cleanup);
+      stream.on('error', cleanup);
+      return { stream, contentLength };
+    } catch {
+      // try next auth strategy
+    }
+  }
+
+  // Clean up if every yt-dlp attempt failed
+  fs.unlink(tmpFile, () => {});
 
   // Fallback to ytdl-core
   const requestOptions = {
@@ -250,11 +375,21 @@ export async function streamYoutubeDownload(url: string, formatId: string, audio
     return { stream, contentLength: audioFormat?.contentLength };
   }
 
+  let selectedFormat: typeof info.formats[number] | undefined;
   const heightNum = parseInt(formatId.replace(/[^0-9]/g, ''), 10);
-  let selectedFormat = info.formats.find((f) => {
-    if (!f.height) return false;
-    return isNaN(heightNum) ? f.height <= 1080 : f.height <= heightNum;
-  });
+  const isBest = formatId === 'best';
+
+  // Prefer complete formats (video + audio); otherwise the highest video-only
+  // stream within the requested height range.
+  const videoFormats = info.formats.filter((f) => f.height && f.hasVideo);
+  const targetHeight = isBest || isNaN(heightNum) ? Number.MAX_SAFE_INTEGER : heightNum;
+  const inRange = videoFormats.filter((f) => f.height! <= targetHeight);
+  const withAudio = inRange.filter((f) => f.hasAudio);
+  const pool = withAudio.length > 0 ? withAudio : inRange;
+  selectedFormat = pool.reduce(
+    (best, f) => (!best || f.height! > best.height! ? f : best),
+    undefined as typeof info.formats[number] | undefined
+  );
 
   if (!selectedFormat) {
     selectedFormat = info.formats.find((f) => f.hasVideo && f.hasAudio);

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { VideoInfoResponse } from '../types';
-import { formatDuration } from '../utils/formatters';
+import { formatDuration, formatQualityLabel } from '../utils/formatters';
 import { triggerFileDownload } from '../services/api';
 import { Youtube, Instagram, Clock, User, Download, Music, Sparkles } from 'lucide-react';
 
@@ -104,7 +104,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({ info }) => {
                           : 'bg-gray-800/80 text-gray-300 hover:bg-gray-700 hover:text-white border border-gray-700/50'
                       }`}
                     >
-                      {fmt.quality}
+                      {formatQualityLabel(fmt.quality)}
                       {fmt.filesize && <span className="ml-1 opacity-75">({fmt.filesize})</span>}
                     </button>
                   );

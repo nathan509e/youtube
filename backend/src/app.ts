@@ -7,6 +7,10 @@ import { ENV } from './config/env.js';
 
 const app = express();
 
+// Trust the first proxy hop (Nginx in the Docker/VPS setup) so req.ip and the
+// rate limiter see the real client IP instead of the proxy's.
+app.set('trust proxy', 1);
+
 // Security headers
 app.use(helmet());
 

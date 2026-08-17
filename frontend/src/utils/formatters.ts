@@ -7,6 +7,17 @@ export function formatDuration(seconds: number): string {
   return `${formattedMins}:${formattedSecs}`;
 }
 
+export function formatQualityLabel(quality: string): string {
+  const labels: Record<string, string> = {
+    best: 'Melhor qualidade',
+    '2160p': '2160p 4K',
+    '1440p': '1440p 2K',
+    '1080p': '1080p Full HD',
+    '720p': '720p HD',
+  };
+  return labels[quality] || quality || 'Automático';
+}
+
 export function detectPlatformFromUrl(url: string): 'youtube' | 'instagram' | 'unknown' {
   if (!url) return 'unknown';
   const lower = url.toLowerCase();

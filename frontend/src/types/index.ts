@@ -8,6 +8,10 @@ export interface FormatOption {
   hasAudio: boolean;
   filesize?: string;
   url?: string;
+  height?: number;
+  codec?: string;
+  fps?: number;
+  ext?: string;
 }
 
 export interface VideoInfoResponse {

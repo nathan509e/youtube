@@ -12,4 +12,5 @@ export const ENV = {
   MAX_CONCURRENT_DOWNLOADS: parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '3', 10),
   RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
   RATE_LIMIT_MAX: parseInt(process.env.RATE_LIMIT_MAX || '10', 10),
+  YT_COOKIES_PATH: process.env.YT_COOKIES_PATH || '',
 };

@@ -1,0 +1,21 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    expose:
+      - "3001"
+    # Uncomment to use a cookies.txt file for higher-quality/authenticated downloads
+    # (export it from your browser with a "Get cookies.txt" extension and place it
+    # next to this file). Also set YT_COOKIES_PATH=/cookies.txt in backend/.env.
+    # volumes:
+    #   - ./cookies.txt:/cookies.txt:ro
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
